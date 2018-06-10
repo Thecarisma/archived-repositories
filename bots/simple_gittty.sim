@@ -1,0 +1,7 @@
+
+call "simple/system/System.sim"
+
+while true
+	__exec("githubpush.sh") 
+	System.sleep(40000)
+end 
