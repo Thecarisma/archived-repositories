@@ -1,0 +1,17 @@
+SIMPLE_BLOCK(BEEP_H_Beep) {
+	int* point1;
+	int num2;
+	if ( SIMPLE_API_PARACOUNT != 2 ) {
+		SIMPLE_API_ERROR(SIMPLE_API_MISS2PARA);
+		return ;
+	}
+	if ( !SIMPLE_API_ISNUMBER(2) ) {
+		SIMPLE_API_ERROR(SIMPLE_API_BADPARATYPE); 
+		return ;
+	} 
+
+	point1 = (int*) SIMPLE_API_GETCPOINTER(1,"BEEP_H");
+	num2 = (int) SIMPLE_API_GETNUMBER(2);
+	SIMPLE_API_RETNUMBER(Beep(point1,num2));
+}
+

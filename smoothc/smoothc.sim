@@ -1,0 +1,263 @@
+
+call simple.io.File
+call simple.utilities.Type
+call simple.core.loadcoredymodule
+
+cblockPrefix = ""
+
+final RETURN_VOID 		= 0
+final RETURN_STRING 	= 1
+final RETURN_POINTER 	= 2
+final RETURN_NUMBER 	= 3
+					
+final PARAMETER_VOID 		= 0
+final PARAMETER_STRING 		= 1
+final PARAMETER_POINTER 	= 2
+final PARAMETER_NUMBER 		= 3
+final PARAMETER_STRUCT		= 4
+
+block main()
+	headerFiles = []
+	cmdparamsLen = lengthOf(cmdparams) - 1
+	for a = 0 to cmdparamsLen {
+		if strEndsWith(cmdparams[a],"h") { add(headerFiles,cmdparams[a]) 
+		else }
+	}
+	
+	if cblockPrefix == '' and lengthOf(headerFiles) > 0 {
+		cblockPrefix = toUpperCase(headerFiles[0])
+		cblockPrefix = replaceStr(cblockPrefix,".","_")
+	}
+	
+	if lengthOf(headerFiles) > 0 {
+		generateFromHeader = new GenerateFromHeader { HeaderFiles = headerFiles }
+		generateFromHeader.execute()
+	}	
+	
+block generateCWrapperBlocks(wrapAbleBlocks)
+	for _block in wrapAbleBlocks {
+		if _block[1] == "" continue }
+		try {
+			wrapBlock = new WrapBlock { BlockParametersLen = lengthOf(_block[2]) 
+										BlockParameters = _block[2]
+										BlockName = _block[1] 
+										ReturnValue = _block[0] }
+			
+			@wrapBlock.BlockName	
+			@wrapBlock.BlockParameters
+			@wrapBlock.ReturnValue
+		catch 
+			@__err__
+			continue 
+		}
+	}	
+	
+class WrapBlock
+	
+	RealBlockName = ""
+	RealBlockParameters = []
+	ParamForReturn = ""
+	
+	BlockName = ""
+	BlockParameters = ""
+	BlockParametersLen = 0
+	ReturnValue = ""
+	
+	block setBlockName(value) 
+		RealBlockName = value
+		if cblockPrefix != "" {
+			value = toLowerCase(cblockPrefix)+"_"+value
+		}
+		BlockName = "SIMPLE_BLOCK(" + value + ") {" + nl
+		for a = 0 to (BlockParametersLen - 1) {
+			if RealBlockParameters[a][1] == PARAMETER_NUMBER {
+				BlockName += "	"+RealBlockParameters[a][0]+" num"+(a+1) + ";" + nl
+				ParamForReturn += "	num"+(a+1)+" = ("+RealBlockParameters[a][0]+") SIMPLE_API_GETNUMBER(" + (a+1) + ");" + nl
+			elif RealBlockParameters[a][1] == PARAMETER_POINTER
+				BlockName += "	"+RealBlockParameters[a][0]+" point"+(a+1) + ";" + nl
+				ParamForReturn += "	point"+(a+1)+" = ("+RealBlockParameters[a][0]+") "
+				ParamForReturn += 'SIMPLE_API_GETCPOINTER(' + (a+1) + ',"'+toUpperCase(cblockPrefix)+'");' + nl
+			}
+		}
+		BlockName += "	if ( SIMPLE_API_PARACOUNT != " + BlockParametersLen + " ) {
+		SIMPLE_API_ERROR(SIMPLE_API_MISS" + BlockParametersLen + "PARA);
+		return ;
+	}"
+		
+	block setBlockParameters(value)
+		RealBlockParameters = value
+		for a = 0 to (BlockParametersLen - 1) {
+			if value[a][1] == PARAMETER_NUMBER {
+				BlockParameters += "	if ( !SIMPLE_API_ISNUMBER(" + (a+1) + ") ) {
+		SIMPLE_API_ERROR(SIMPLE_API_BADPARATYPE); 
+		return ;
+	} " + nl
+			elif value[a][1] == PARAMETER_POINTER
+				BlockParameters += "	if ( !SIMPLE_API_ISPOINTER(" + (a+1) + ") ) {
+		SIMPLE_API_ERROR(SIMPLE_API_BADPARATYPE); 
+		return ;
+	} " + nl
+			}			
+		}
+		
+	block setReturnValue(value)
+		ReturnValue = ParamForReturn + "	"
+		if value == PARAMETER_NUMBER {
+			ReturnValue += "SIMPLE_API_RETNUMBER("
+		elif value == PARAMETER_POINTER
+			ReturnValue += "SIMPLE_API_RETCPOINTER("
+		}
+		ReturnValue += RealBlockName+"("
+		for a = 0 to (BlockParametersLen - 1) {
+			if RealBlockParameters[a][1] == PARAMETER_NUMBER {
+				ReturnValue += "num" + (a+1) + ""
+			elif RealBlockParameters[a][1] == PARAMETER_POINTER 
+				ReturnValue += "point" + (a+1) + ""
+			}
+			if a != (BlockParametersLen - 1) { ReturnValue += "," }
+		}
+		ReturnValue  += ")" 
+		if value == PARAMETER_POINTER { ReturnValue+= ',"' + toUpperCase(cblockPrefix) + '"'}
+		ReturnValue  += ");" + nl + "}" + nl 
+			
+class GenerateFromHeader
+
+	HeaderFiles = []
+	
+	cNumberTypes = ["int",
+					"char",
+					"long",
+					"long long",
+					"long long long",
+					"long int",
+					"long long int",
+					"int8_t",
+					"int16_t",
+					"int32_t",
+					"int64_t",
+					"uint8_t",
+					"uint16_t",
+					"uint32_t",
+					"uint64_t",
+					"float",
+					"double",
+					"bool",
+					"BOOL",
+					"size_t",
+					"unsigned int",
+					"unsigned char",
+					"unsigned float",
+					"unsigned double",
+					"unsigned long",
+					"unsigned long long"]
+					
+	cStructTypes = []
+	
+	block execute() 
+		for hFile in HeaderFiles {
+			readHeaderFile(hFile)
+		}
+		
+	private 
+	
+		block readHeaderFile(hFile)
+			preCode = ""
+			stillPreCode = true
+			wrapAbleBlocks = []
+			TOKEN_NORMAL =  0 TOKEN_MULTILINE_COMMENT = 1 TOKEN_LITERAL_1 = 2 TOKEN_LITERAL_2 = 3
+			type = TOKEN_NORMAL
+	
+			hContent = __readfile(hFile)
+			hContentLines = __string_to_list(hContent) 
+			hContentLen = lengthOf(hContentLines) - 1 
+			for i = 0 to hContentLen {
+				currentValue = __trim(hContentLines[i])
+				if currentValue == "" {
+				elif !strStartsWith(currentValue, "#") && !strStartsWith(currentValue, "//")
+					splitedValue = strSplit(currentValue," ")
+					sVLen = lengthOf(splitedValue) 
+					if splitedValue[0] == "typedef" {
+						addNewDataType(currentValue)
+					elif __find_in_list(cNumberTypes,splitedValue[0]) 
+						add(wrapAbleBlocks,lineAsCFuntion(currentValue,RETURN_NUMBER)) 
+					elif strContains(splitedValue[0],"*") or (sVLen > 1 and strContains(splitedValue[1],"*")) 
+						add(wrapAbleBlocks,lineAsCFuntion(currentValue,PARAMETER_POINTER)) 
+					}
+				}
+			}
+		generateCWrapperBlocks(wrapAbleBlocks)
+			
+		block lineAsCFuntion(line,returnType)
+			funcName = "" 
+			
+			offset = __substr(line,"(") - 1
+			terminate = 0  
+			for x = offset to 0 step -1 {
+				switch line[x] {	
+					case " " 
+						terminate = x
+						funcName = __substr(line,terminate+1,offset-terminate-1)
+						break
+					case "*"
+						terminate = x + 1 
+						funcName = __substr(line,terminate,offset-terminate)
+						break
+				}
+			}
+			
+			returnValue = __left(line,terminate-1) 
+			cFuncParam = __substr(line,offset+1,(lengthOf(line)-1)-offset-1) 
+			cparameters = parseCParam(cFuncParam) 
+			return [returnType,funcName,cparameters]
+			
+			
+		block parseCParam(cparam)
+			finalParam = [] 
+			
+			splitParam = strSplit(cparam,",")
+			for param in splitParam {
+				param = removeStr(param,"(")
+				param = removeStr(param,")")
+				param = removeStr(param,";")
+				splitedValue = strSplit(param," ")
+				sVLen = lengthOf(splitedValue)
+					param = []
+					add(param,splitedValue[0])  
+				if __find_in_list(cNumberTypes,splitedValue[0]) { 
+					add(param,PARAMETER_NUMBER)
+				elif __find_in_list(cStructTypes,splitedValue[0]) or __find_in_list(cStructTypes,"*"+splitedValue[0]) 
+					add(param,PARAMETER_POINTER) 
+				}
+				if strContains(splitedValue[0],"*") { add(param,PARAMETER_POINTER) 
+				elif (sVLen > 1 and strContains(splitedValue[1],"*")) 
+					param = []
+					add(param,splitedValue[0] + "*") 
+					add(param,PARAMETER_POINTER)
+				}
+				finalParam + param
+			}
+			return finalParam
+		
+		block addNewDataType(line)  
+			line = removeStr(line,";")
+			line = __trim(removeStr(line,"typedef"))
+			splitParam = strSplit(line," ")
+			sPLen = lengthOf(splitParam) - 1
+			
+			newDataType = __trim(splitParam[sPLen])
+			line = __trim(removeStr(line,newDataType))
+			if __find_in_list(cNumberTypes,line) {
+				if !__find_in_list(cNumberTypes,newDataType) {
+					cNumberTypes + newDataType
+				}
+			else 
+				if strContains(line,"*") and !strContains(newDataType,"*") {
+					newDataType = "*"+newDataType
+				}
+				cStructTypes + __trim(replaceStr(newDataType," ","")) 
+			}
+			
+				
+		block isNewLine(val)
+			return val == cr || val == nl || val == crlf
+			
