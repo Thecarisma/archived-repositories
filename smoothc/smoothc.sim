@@ -2,13 +2,19 @@
 call simple.io.File
 call simple.utilities.Type
 call simple.core.loadcoredymodule
+call simple.system.SimpleX
+call simple.utilities.Console
+call simple.utilities.Math
 
-cblockPrefix = ""
+simpleIncludeHeader = simpleIncludesDir() + "simple.h"
+dir = new Directory("./")
+final initialDir = dir.AbsolutePath
 
-final RETURN_VOID 		= 0
-final RETURN_STRING 	= 1
-final RETURN_POINTER 	= 2
-final RETURN_NUMBER 	= 3
+
+final RETURN_VOID 			= 0
+final RETURN_STRING 		= 1
+final RETURN_POINTER 		= 2
+final RETURN_NUMBER 		= 3
 					
 final PARAMETER_VOID 		= 0
 final PARAMETER_STRING 		= 1
@@ -16,79 +22,1033 @@ final PARAMETER_POINTER 	= 2
 final PARAMETER_NUMBER 		= 3
 final PARAMETER_STRUCT		= 4
 
-block main()
-	headerFiles = []
+final CONSTANT				= 0
+final FUNCTION				= 1
+final VARIABLE				= 2
+final STRUCT_POINTER 		= 3
+
+wrapAbleBlocks 				= []
+wrapAbleConstants 			= []
+treatedHeaderValue 			= []
+
+smoothc = new SmoothC()
+CWrapperCode = ""
+currentClass = ""
+currentClassParent = ""
+hasClass = false
+modifierFlag = "public"
+
+block main() 
 	cmdparamsLen = lengthOf(cmdparams) - 1
-	for a = 0 to cmdparamsLen {
-		if strEndsWith(cmdparams[a],"h") { add(headerFiles,cmdparams[a]) 
+	for a = 0 to cmdparamsLen { 
+		if strEndsWith(toLowerCase(cmdparams[a]),"h") or strEndsWith(toLowerCase(cmdparams[a]),"hpp") { 
+			smoothc.addHeaderFile(cmdparams[a]) 
+		elif strEndsWith(toLowerCase(cmdparams[a]),"smoothc") smoothc.setFile(cmdparams[a]) 
+		elif strContains(cmdparams[a],"=") smoothc.setVariable(cmdparams[a],"arg")
 		else }
 	}
+	smoothc.process()
 	
-	if cblockPrefix == '' and lengthOf(headerFiles) > 0 {
-		cblockPrefix = toUpperCase(headerFiles[0])
-		cblockPrefix = replaceStr(cblockPrefix,".","_")
+	
+	if lengthOf(smoothc.CStructTypes) > 0 {
+		for struct in smoothc.CStructTypes {
+			initStructFunction(struct)
+		}
 	}
-	
-	if lengthOf(headerFiles) > 0 {
-		generateFromHeader = new GenerateFromHeader { HeaderFiles = headerFiles }
-		generateFromHeader.execute()
-	}	
-	
-block generateCWrapperBlocks(wrapAbleBlocks)
-	for _block in wrapAbleBlocks {
-		if _block[1] == "" continue }
-		try {
-			wrapBlock = new WrapBlock { BlockParametersLen = lengthOf(_block[2]) 
-										BlockParameters = _block[2]
-										BlockName = _block[1] 
-										ReturnValue = _block[0] }
-			
-			@wrapBlock.BlockName	
-			@wrapBlock.BlockParameters
-			@wrapBlock.ReturnValue
-		catch 
-			@__err__
-			continue 
+	if lengthOf(smoothc.UntreatedFunction) > 0 {
+		for function in smoothc.UntreatedFunction {
+			for uselessToken in smoothc.UselessTokens {
+				function = removeStr(function,uselessToken)
+			}
+			lineAsCFuntion(function)
+		}
+	}
+	if lengthOf(smoothc.UntreatedVariables) > 0 {
+		for variable in smoothc.UntreatedVariables {
+			addAssignmentBlock(variable)
+		}
+	}
+	if lengthOf(smoothc.HeaderFiles) > 0 and smoothc.ReadHeaderFile { 
+		for hFile in smoothc.HeaderFiles {
+			readHeaderFile(hFile)
 		}
 	}	
+	generateCWrapperBlocks(wrapAbleBlocks)
+	
+block generateCWrapperBlocks(wrapAbleBlocks) 
+	if __file_exists(simpleIncludeHeader) {
+		if smoothc.Lang == "c++" or smoothc.Lang == "cpp" {
+			CWrapperCode += 'extern "C" {' + nl 
+			CWrapperCode += '	#include "'+simpleIncludeHeader + '"' + nl 
+			CWrapperCode += '}'
+		else
+			CWrapperCode += '#include "'+simpleIncludeHeader + '"' + nl 
+		}
+	}
+	hmm = ""
+	CWrapperCode += smoothc.includesToCString() + nl + nl
+	if smoothc.Lang == "c++" or smoothc.Lang == "cpp" {
+		CWrapperCode += smoothc.CppDirective + nl
+		hmm = "_cpp"
+	}
+	CWrapperCode += smoothc.Code + nl
+	mainSimpleCBlocks = "SIMPLE_API void init_simple_module" + hmm + "(SimpleState *sState)"+nl+"{"
+	for _block in wrapAbleBlocks {
+		if _block[1] == "" { continue } 
+		#try { 
+			wrapBlock = new WrapBlock { BlockType = _block[4]
+										HasClass = _block[5]
+										ClassName = _block[6]
+										ClassNameParent = _block[7]
+										BlockParametersLen = lengthOf(_block[3]) 
+										BlockParameters = _block[3]
+										RealFunctionName = _block[1]
+										BlockName = _block[2] 
+										ReturnValue = _block[0] }
+			
+			CWrapperCode += wrapBlock.BlockName	
+			CWrapperCode += wrapBlock.BlockParameters
+			CWrapperCode += wrapBlock.ReturnValue + nl
+			mainSimpleCBlocks += wrapBlock.SimpleWrapper
+		#catch 
+		#	stderr.println(__err__)
+		#	continue 
+		#}
+	}
+	value = ""
+	if smoothc.Prefix != "" {
+			value = toLowerCase(smoothc.Prefix)+"_"
+	}
+	for Register in smoothc.RegisterOnly {
+		if strContains(smoothc.Code, value+Register) { 
+			stderr.print("REGISTERING : "+Register+"...")  
+			mainSimpleCBlocks += nl + '	register_block("__'+Register+'",'+value+Register+');'
+			stderr.println("(done)")  
+		else
+			stderr.println("The function cannot be register because it not defined : "+Register)
+		}
+	}
+	mainSimpleCBlocks += nl +"}" + nl	
+	CWrapperCode += mainSimpleCBlocks + nl 
+	CWrapperCode += smoothc.PostCode
+	if smoothc.FileExt == "c" and smoothc.Lang != "c" {
+		smoothc.FileExt = smoothc.Lang
+	}
+	changeDirectory(initialDir) @smoothc.OpDir
+	__write_file(smoothc.OpDir+"/"+smoothc.LibName+"."+smoothc.FileExt,CWrapperCode)
+	
+	if smoothc.CreateSimpleWrapper {
+		simpleWrapper = new SimpleWrapper(smoothc,wrapAbleBlocks)
+		simpleWrapper.process()
+	}
+	if smoothc.GenerateMakefile {
+		makefile = new MakeFile(smoothc)
+		makefile.generate()
+	}
+	
+block readHeaderFile(hFile)
+	if !__file_exists(hFile) {
+		stderr.println("\nFile not found skipping : "+hFile)
+		return 
+	}
+	
+	TOKEN_NORMAL =  0 
+	TOKEN_TYPEDEF = 1
+	TOKEN_ENUM = 2
+	TOKEN_FUNCTION = 3
+	TOKEN_MULTILINE_COMMENT = 4
+	TOKEN_CLASS = 5
+	TOKEN_CLASS_PARENT = 6
+	token_type = TOKEN_NORMAL 
+	previous_token_type = TOKEN_NORMAL
+	EOL = char(384)
+	
+	currentTypedef = []
+	currentConstant = []
+	currentFunction = [] 
+	
+	currentClass = ""
+	currentClassParent = ""
+	hasClass = false
+	isFriendlyClass = false
+	modifierFlag = "public"
+	
+	hContent = __read_file(hFile) + nl
+	hContent = replaceStr(hContent,"*/","*/"+nl)
+	hContent = replaceStr(hContent,"//",nl+"//")
+	hContent = replaceStr(hContent,tab,"    ") 
+	hContent = replaceStr(hContent,"/*@{*/",nl) 
+	hContent = replaceStr(hContent,"{",nl+" {")
+	hContent = replaceStr(hContent,nl," "+EOL+" ")
+	hContent = replaceStr(hContent,";","; "+EOL) 
+	hContent = replaceStr(hContent,"};","} ;") 
+	hContent = replaceStr(hContent,"char *","char* ") 
+	hContent = replaceStr(hContent,"void *","void* ") 
+	hContent = replaceStr(hContent,":",": ") 
+	hContent = removeAllComments(hContent,EOL)
+	#@replaceStr(hContent,EOL,nl) 
+	#__exit__
+	for uselessToken in smoothc.UselessTokens {
+		hContent = removeStr(hContent,uselessToken)
+	}
+	sourceTokens = strSplit(hContent," ") 
+	tokensLen = lengthOf(sourceTokens) - 1
+	for a = 0 to tokensLen {
+		token = __trim(sourceTokens[a]) 
+		switch token_type {
+			case TOKEN_NORMAL 
+				if strContains(token,EOL) or token == EOL {
+					if strContains(token,EOL) {
+						token = removeStr(token,EOL)
+						if isWhiteSpace(token) continue end
+						if strContains(token,"/*") {
+							a++
+							previous_token_type = TOKEN_NORMAL
+							token_type = TOKEN_MULTILINE_COMMENT
+						else 
+							#@token+" is dead"
+						}
+					else
+						continue
+					}
+				elif strStartsWith(token,"/") and (sourceTokens[a+1] == "*" or strEndsWith(token,"*")) or strStartsWith(sourceTokens[a],"/*")
+					a++
+					previous_token_type = TOKEN_NORMAL
+					token_type = TOKEN_MULTILINE_COMMENT
+				elif token == "typedef" or strContains(token,"typedef")
+					token_type = TOKEN_TYPEDEF 
+				elif strContains(token,"public") or strContains(token,"private") or strContains(token,"protected")
+					token = removeStr(token,":")
+					modifierFlag = token 
+				elif token == "friend"
+					isFriendlyClass = true
+					continue
+				elif token == "class" and !isFriendlyClass
+					hasClass = true 
+					previous_token_type = TOKEN_NORMAL
+					token_type = TOKEN_CLASS 
+				elif token == ":" and hasClass and !isFriendlyClass
+					previous_token_type = TOKEN_NORMAL
+					if hasClass {
+						token_type = TOKEN_CLASS_PARENT
+					else
+						continue
+					}
+				elif token == "enum" or (strContains(token,"enum")) 
+					previous_token_type = TOKEN_NORMAL
+					token_type = TOKEN_ENUM 
+				elif strStartsWith(token,"#") or strStartsWith(token,"//") or strStartsWith(token,"__")
+					a = parseLineComment(sourceTokens, tokensLen, a, EOL)
+				elif token == "{" or strStartsWith(token,"{") and previous_token_type != TOKEN_CLASS and previous_token_type != TOKEN_CLASS_PARENT  
+					openedBrace = 0
+					do { 
+						if a == tokensLen + 1 { break }
+						if sourceTokens[a] == "{" {
+							openedBrace++
+						elif  sourceTokens[a] == "}"
+							openedBrace--
+						}
+						a++
+					} while (openedBrace > 0)
+				else 
+					line = ""
+					isValidLine = true
+					do {
+						line += sourceTokens[a] + " " 
+						a++ 
+						if a == tokensLen + 1 { break }
+						if sourceTokens[a] == "{" {
+							a-- 
+							isValidLine = false 
+							break
+						elif strStartsWith(sourceTokens[a],"{") 
+							a-- sourceTokens[a] = "{"
+							isValidLine = false 
+							break
+						elif sourceTokens[a] == ";" 
+							a-- 
+							isValidLine = false 
+							break
+						elif strContains(sourceTokens[a],";") or strContains(sourceTokens[a],EOL) and !strContains(sourceTokens[a-1],",") 
+							line += removeStr(sourceTokens[a],";") 
+							isValidLine = false 
+							a--
+							break
+						}
+					} while (isValidLine)
+					line = removeStr(line,EOL)
+					if strEndsWith(line,"}") { a++ continue }  
+					if modifierFlag != "public" { a++ continue }
+					#if strContains(line,"virtual") { a++ continue }
+					#@__trim(line) #__exit__
+					if strContains(__trim(line),")") and strContains(__trim(line),"{")  {
+						line = strSplit(line,"{")[0] 					
+					}
+					if strContains(line,"=") and !strEndsWith(__trim(line),")"){ #assignment
+						line = removeStr(line,"const ")
+						addAssignmentBlock(line)
+					else #function
+						lineAsCFuntion(__trim(line))
+					}
+					a++
+				}
+			case TOKEN_CLASS
+				if modifierFlag != "public" {
+					while !strContains(sourceTokens[a],"{") {
+						a++
+					}
+					openedBrace = 0
+					do { 
+						sourceTokens[a] = removeStr(sourceTokens[a],EOL)						
+						if a == tokensLen { break }
+						if sourceTokens[a] == "{" {
+							openedBrace++ 
+						elif  sourceTokens[a] == "}"
+							openedBrace-- 
+						elif strContains(sourceTokens[a],"{") and strContains(sourceTokens[a],"}")
+							
+						elif strContains(sourceTokens[a],"{")
+							openedBrace++ 
+						elif strContains(sourceTokens[a],"}") 
+							openedBrace-- 
+						}
+						a++
+					} while (openedBrace > 0) 
+					previous_token_type = TOKEN_CLASS
+					token_type = TOKEN_NORMAL
+					hasClass = false
+				else 
+					if strContains(token,";") or strContains(sourceTokens[a+1],";") {
+						previous_token_type = TOKEN_NORMAL 
+						token_type = TOKEN_NORMAL
+						hasClass = false
+						currentClass = ""
+					else
+						previous_token_type = TOKEN_CLASS  
+						token_type = TOKEN_NORMAL
+						currentClass = token
+					}
+				}
+			case TOKEN_CLASS_PARENT
+				if token == "public" or token == "private" or token == "protected" {
+					continue
+				else
+					currentClassParent = removeStr(token,";")
+					previous_token_type = TOKEN_CLASS_PARENT
+					token_type = TOKEN_NORMAL
+				}
+			case TOKEN_TYPEDEF
+				if token == "enum" or strContains(token,"enum") {
+					previous_token_type = TOKEN_TYPEDEF
+					token_type = TOKEN_ENUM
+					continue
+				} 
+				if (strEndsWith(token,";") or strEndsWith(token,EOL)) and lengthOf(token) > 1 { 
+					token = removeStr(token,";")
+					token = removeStr(token,EOL) 
+					add(currentTypedef,token)
+					token = ";" 
+				}
+				if token == ";" or token == "{" or token == "}" or strContains(sourceTokens[a],EOL) {
+					typedefLen = lengthOf(currentTypedef) 
+					if typedefLen > 2 {
+						tempList = [] 
+						actualType = ""
+						for i = 0 to typedefLen - 2 {
+							actualType += currentTypedef[i] + " "
+						}
+						add(tempList,__trim(actualType)) 
+						add(tempList,currentTypedef[typedefLen-1])
+						currentTypedef = tempList
+					} 
+					if lengthOf(currentTypedef) > 1 {
+						addNewDataType(currentTypedef[0],currentTypedef[1])
+					}
+					previous_token_type = TOKEN_TYPEDEF
+					token_type = TOKEN_NORMAL
+					currentTypedef = []
+					continue
+				} 
+				add(currentTypedef,token) 
+			case TOKEN_ENUM
+				isEnum = true 
+				enumValue = ""  
+				if !strContains(sourceTokens[a],"{") {
+					if hasClass {
+						sourceTokens[a] = currentClass+"::"+sourceTokens[a]
+					}
+					addNewDataType("int",sourceTokens[a])
+				elif strContains(sourceTokens[a],"{") 
+					if hasClass {
+						sourceTokens[a] = currentClass+"::"+sourceTokens[a]
+					}
+					sourceTokens[a] = removeStr(sourceTokens[a],"{")
+					if __trim(sourceTokens[a]) != "" {
+						addNewDataType("int",sourceTokens[a])
+					}
+				else 
+					#@sourceTokens[a]+"<<<"
+				}
+				do {	
+					if a == tokensLen + 1 { break }
+					if sourceTokens[a] == "{" { a++ continue
+					elif strContains(sourceTokens[a],EOL) 
+						sourceTokens[a] = removeStr(sourceTokens[a], EOL)
+						a--
+					elif strStartsWith(sourceTokens[a],"#") or strStartsWith(sourceTokens[a],"//") 
+						a = parseLineComment(sourceTokens, tokensLen, a, EOL)
+					elif strStartsWith(sourceTokens[a],"/") and (sourceTokens[a+1] == "*" or strEndsWith(sourceTokens[a],"*")) or strStartsWith(sourceTokens[a],"/*")
+						previous_token_type = TOKEN_ENUM
+						token_type = TOKEN_MULTILINE_COMMENT
+						break
+					elif strContains(sourceTokens[a],"=")  or strContains(sourceTokens[a],",") 
+						if enumValue == "" and lengthOf(strSplit(sourceTokens[a],"=")) > 1 {
+							enumValue = strSplit(sourceTokens[a],"=")[0] 
+						elif enumValue == "" and strContains(sourceTokens[a],"=") and lengthOf(sourceTokens[a]) > 1
+							enumValue = removeStr(sourceTokens[a],"=")
+						} 
+						if enumValue == "" and strContains(sourceTokens[a],",") { 
+							value = removeStr(sourceTokens[a],",")
+							if value != "" and !isDigit(value[0]) enumValue = value end
+						} 
+						if enumValue != "" and !isPunctuation(enumValue) and enumValue != "=" {
+							uniqueID = (enumValue+"_"+"_")
+							if __find_in_list(treatedHeaderValue,uniqueID) > -1 {
+								break 
+							}
+							if modifierFlag == "public" { 
+								add(treatedHeaderValue,uniqueID)
+								realEnumValue = enumValue
+								if hasClass {
+									realEnumValue = currentClass+"::"+enumValue
+								}								add(wrapAbleBlocks,[RETURN_NUMBER,realEnumValue,enumValue,[],CONSTANT,hasClass,currentClass,currentClassParent])
+							}
+						}
+						enumValue = ""
+					elif strEndsWith(sourceTokens[a],";") or sourceTokens[a] == "}" or strContains(sourceTokens[a],EOL) 
+						if enumValue != "" and !isDigit(enumValue) { 
+							if enumValue != "" and !isPunctuation(enumValue) and enumValue != "=" {
+								uniqueID = (enumValue+"_"+"_")
+								if __find_in_list(treatedHeaderValue,uniqueID) > -1 {
+									break 
+								}
+								if modifierFlag == "public" { 
+									add(treatedHeaderValue,uniqueID)
+									realEnumValue = enumValue
+									if hasClass {
+										realEnumValue = currentClass+"::"+enumValue
+									}								add(wrapAbleBlocks,[RETURN_NUMBER,realEnumValue,enumValue,[],CONSTANT,hasClass,currentClass,currentClassParent])
+								}
+							}
+						}
+						token_type = TOKEN_NORMAL
+						currentConstant = []
+						isEnum = false
+					else 
+						enumValue = sourceTokens[a] 
+						if strContains(enumValue,"=") or strContains(enumValue,"{"){
+							enumValue = removeStr(enumValue,"=")
+							enumValue = removeStr(enumValue,"{")
+						}
+					}
+					a++
+				} while (isEnum) 
+				if previous_token_type == TOKEN_TYPEDEF {
+					while strContains(sourceTokens[a],"}") or sourceTokens[a] = ";" or sourceTokens[a] == " " or sourceTokens[a] == EOL {
+						a++
+					} 
+					sourceTokens[a] = removeStr(sourceTokens[a],";")
+					sourceTokens[a] = removeStr(sourceTokens[a],EOL)
+					if hasClass {
+						sourceTokens[a] = currentClass+"::"+sourceTokens[a]
+					}
+					addNewDataType("int",sourceTokens[a])
+				} 
+			case TOKEN_MULTILINE_COMMENT
+				if strContains(token,"*/") {
+					token_type = previous_token_type 
+				}
+				if strContains(sourceTokens[a],"*/") {
+					a++
+				}
+			default
+		}
+	} 
+	
+block removeAllComments(hContent,EOL)
+	newContent = ""
+	hContent = removeStr(hContent,cr)
+	sourceTokens = strSplit(hContent," ") 
+	tokensLen = lengthOf(sourceTokens) - 1
+	for a = 0 to tokensLen {
+		token = __trim(sourceTokens[a]) 
+		if strStartsWith(token,"/*") or token == "/*"
+			if !strContains(sourceTokens[a],"*/") {
+				a++ 
+			}
+			while !strContains(sourceTokens[a],"*/") {
+					a++ 
+			}	
+			if strContains(sourceTokens[a],"*/") {
+				a++
+			}
+		elif strStartsWith(token,"#") or strStartsWith(token,"//") or strStartsWith(token,"__")
+			a = parseLineComment(sourceTokens, tokensLen, a, EOL)
+		}
+		newContent += sourceTokens[a]	+ " "	
+	}
+	return newContent
+	
+block addNewDataType(parentType,newDataType)  
+	if __find_in_list(smoothc.CNumberTypes,parentType,0) > -1 or __find_in_list(smoothc.CNumberTypes,newDataType,0) > -1 {
+		if __find_in_list(smoothc.CNumberTypes,newDataType,0) < 0 {
+			smoothc.CNumberTypes + [newDataType,parentType]
+		}
+	elif __find_in_list(smoothc.CVoidTypes,parentType,0) > -1 or __find_in_list(smoothc.CVoidTypes,newDataType,0) > -1 
+		if __find_in_list(smoothc.CVoidTypes,newDataType) < 0{
+			smoothc.CVoidTypes + [newDataType,parentType]
+		}
+	elif __find_in_list(smoothc.CStringTypes,parentType,0) > -1 or __find_in_list(smoothc.CStringTypes,newDataType,0) > -1 
+		if __find_in_list(smoothc.CStringTypes,newDataType,0) < 0{
+			smoothc.CStringTypes + [newDataType,parentType]
+		}
+	else 
+		if strContains(parentType,"*") and !strContains(newDataType,"*") {
+			newDataType = "*"+newDataType
+		}
+		newDataType = __trim(replaceStr(newDataType," ","")) 
+		smoothc.CStructTypes + [newDataType,parentType]
+	}
+	
+block lineAsCFuntion(line) 
+	line = removeStr(line,";")
+	if strContains(line,":") {
+		lSplit = strSplit(line,":")
+		line = __trim(lSplit[0])
+	}
+	if strEndsWith(line,"const") {
+		line = removeStr(__trim(line),"const")
+		line = "const "+line
+	}
+	if strContains(__trim(line),"(") and !strEndsWith(__trim(line),")") { line += ")" }
+	if line == null { return }
+	isStatic = false
+	if hasClass {
+		if strStartsWith(line,currentClass) {
+			line = currentClass + "* " + line
+		}
+	}
+	if strStartsWith(line,"static") {
+		isStatic = true
+		line = removeStr(line,"static ")
+	}
+	funcName = ""   
+	stdout.print("EXPORTING:FUNCTION : "+line+"...")
+	
+	offset = __substr(line,"(") - 1
+	terminate = 0   
+	lineLen = lengthOf(line)
+	for x = offset to 0 step -1 { 
+		switch line[x] {
+			case " " 
+				noId = true funcName__ = "" y = x
+				while isWhiteSpace(line[x]) || noId {
+					x-- 
+					if x < 0 { break } 
+					if !isWhiteSpace(line[x]) {
+						funcName__ += line[x] 
+					else
+						noId = false
+					}
+				}  
+				#if (noId) {
+					x = y
+				#}
+				terminate = x 
+				funcName = __substr(line,terminate+1,offset-terminate-1)
+				break
+			case "*"
+				terminate = x + 1 
+				funcName = __substr(line,terminate,offset-terminate)
+				break
+		}
+	} 
+	funcName = __trim(funcName) 
+	if strContains(funcName," ") {
+		splitedName = strSplit(funcName," ")
+		funcName = splitedName[lengthOf(splitedName)-1]
+	} 
+	if strContains(funcName,"->") or funcName == "return" { stdout.println("(failed)") return }
+	if (funcName == null or strContains(funcName,"=")) { 
+		if line != null {
+			if isStatic {
+				line = "static "+line
+			}
+			stdout.println("(transfer as variable)") 
+			addAssignmentBlock(line)
+		else
+			stdout.println("(failed)")
+		}
+		return
+	} 
+	if hasClass and isStatic {
+		funcName = currentClass+"::"+funcName
+	}
+	returnValue = __left(line,terminate-1)  
+	if __trim(returnValue) == "return" or strContains(returnValue,";") { stdout.println("(failed)") return } 
+	cFuncParam = __substr(line,offset+1,(lengthOf(line)-1)-offset-1) 
+	if !strEndsWith(cFuncParam,")") {
+		offset = __substr(cFuncParam,")") 
+		cFuncParam = __substr(cFuncParam,0,offset)
+	}
+	initialParam = cFuncParam  
+	cFuncParamSplit = strSplit(cFuncParam," ") 
+	if lengthOf(cFuncParamSplit) > 2 && strContains(cFuncParam,",") { 
+		paramPosition = 0 openBracketCount = 2 cFuncParam = ""
+		noCallback = true
+		do {	 //@""+paramPosition + " : " + lengthOf(cFuncParamSplit)
+			if paramPosition == lengthOf(cFuncParamSplit) { break }
+			cFuncParam += cFuncParamSplit[paramPosition]+" "
+			if strContains(cFuncParamSplit[paramPosition],"(") {
+				openBracketCount++
+				noCallback = true
+			else
+				openBracketCount-- 
+			} 
+			if openBracketCount <= 0 {
+				break
+			}
+			paramPosition++
+		} while (true) 
+		
+		if noCallback {
+			cFuncParam = initialParam
+		}
+	} 
+	cFuncParam = __trim(cFuncParam) 
+	if !strStartsWith(cFuncParam,"("){  cFuncParam = "(" + cFuncParam }
+	if hasClass and !isStatic {
+		if cFuncParam[0] == "(" {
+			cFuncParam[0] = "!"
+			cFuncParam = replaceStr(cFuncParam,"!","("+currentClass+"* obj, ")
+		}
+	} 
+	cparameters = parseCParam(cFuncParam) 
+	if strContains(returnValue,"const") and strContains(returnValue,"void") {
+		returnValue = removeStr(__trim(returnValue),"const ")
+	}
+	if __find_in_list(smoothc.CVoidTypes,returnValue,0) > -1 {
+		returnType = RETURN_VOID
+	elif __find_in_list(smoothc.CNumberTypes,returnValue,0) > -1 
+		returnType = RETURN_NUMBER
+	elif __find_in_list(smoothc.CStringTypes,returnValue,0) > -1 
+		returnType = RETURN_STRING
+	else #strContains(returnValue,"*") or (sVLen > 1 and strContains(returnValue,"*")) 
+		returnType = RETURN_POINTER 
+	} 
+	
+	uniqueID = (funcName+"_"+"_")
+	realFunctionName = funcName
+	if strContains(realFunctionName,"~") {
+		funcName = replaceStr(funcName,"~","destructor")
+		#no destructor for now
+		stdout.println("(failed)")
+		return 
+	}
+	if __find_in_list(treatedHeaderValue,uniqueID) > -1 {
+		count = 0
+		for hv in treatedHeaderValue {
+			if strStartsWith(hv,uniqueID) {
+				count++
+			}
+		}
+		uniqueID += "_"+count 
+		funcName += "_"+count
+	}
+	stdout.println("(done)")
+	add(wrapAbleBlocks,[returnType,realFunctionName,funcName,cparameters,FUNCTION,hasClass,currentClass,currentClassParent])
+	add(treatedHeaderValue,uniqueID) 
+	
+	
+block parseCParam(cparam)
+	finalParam = [] 
+	cparam = replaceStr(cparam,"[]","*")
+	
+	cparam[0] = " "
+	cparam = __trim(cparam)
+	if strContains(cparam,"(") {
+		tempParam = ""
+		isValidParam = true
+		for char in cparam {
+			if char == "(" {
+				isValidParam = false
+			elif char == ")"
+				isValidParam = true
+			}
+			if isValidParam {
+				tempParam += char
+			}
+		}
+		cparam = tempParam
+	}
+	doIt = true
+	if doIt and strContains(cparam,"/") {
+		tempParam = ""
+		cparamLen = lengthOf(cparam) - 1
+		for i = 0 to cparamLen {
+			v = cparam[i]
+			if v == "/" and cparam[i+1] == "*" { 
+				while (true) {
+					if strContains(cparam[i]+cparam[i+1],"*/") {
+						break 
+					}
+					i++
+				}
+				i++
+			else
+				tempParam += v
+			}
+		}
+		tempParam = replaceStr(tempParam,tab," ")
+		tempParam = replaceStr(tempParam," )",")")
+		cparam = tempParam 
+	}
+	splitParam = strSplit(cparam,",")  
+	for param in splitParam {
+		hasConst = false
+		if strContains(param,"const") {
+			param = removeStr(param,"const")
+			hasConst = true
+		}
+		param = removeStr(param,"(")
+		param = removeStr(param,")")
+		param = removeStr(param,";") 
+		if strContains(param,"=") {
+			eqSplit = strSplit(param,"=")
+			param = __trim(eqSplit[0]) 
+		} 
+		if __trim(param) == "" { param = "void" } 
+		if __trim(param) == "..." or __trim(param) == "va_list" { param = "void * __va_args__" }
+		splitedValue = strSplit(param," ") 
+		sVLen = lengthOf(splitedValue) 
+		paramName = splitedValue[sVLen - 1] 
+		paramType = __left(param,(lengthOf(param) - lengthOf(paramName) - 1)) 
+		if (sVLen > 1 and strContains(paramName,"*")) {
+			paramName = removeStr(paramName," ")
+			paramNameLen = lengthOf(paramName)- 1
+			for i = 0 to paramNameLen {
+				if __trim(paramName[i]) == "*" {
+					paramType += "*"
+				else
+					break
+				}
+			}			
+		}
+		if (sVLen > 1 and strContains(paramName,"&")) {
+			paramName = removeStr(paramName," ")
+			paramNameLen = lengthOf(paramName)- 1
+			for i = 0 to paramNameLen {
+				if __trim(paramName[i]) == "&" {
+					paramType += "&"
+				else
+					break
+				}
+			}			
+		}
+		paramType = __trim(paramType)
+		if sVLen <= 1 { 
+			if param == "void"  {
+				continue 
+			else 
+				paramType = __trim(param)
+			}
+		}
+		
+		if hasConst {
+			paramType = "const "+paramType
+		}	
+		param = getParamType(paramType,paramType,true)
+		finalParam + param
+	} 
+	return finalParam
+	
+block getParamType(paramType, initialparamType, recurse) 
+	param = []
+	add(param,paramType)  
+	if __find_in_list(smoothc.CNumberTypes,paramType,0) > -1 { 
+		index = __find_in_list(smoothc.CNumberTypes,paramType,0)
+		add(param,smoothc.CNumberTypes[index][1])
+		add(param,PARAMETER_NUMBER) 
+	elif __find_in_list(smoothc.CStringTypes,paramType,0) > -1 
+		index = __find_in_list(smoothc.CStringTypes,paramType,0) 
+		add(param,smoothc.CStringTypes[index][1])
+		add(param,PARAMETER_STRING) 
+	elif __find_in_list(smoothc.CStructTypes,paramType,0) > -1 or __find_in_list(smoothc.CStructTypes,"*"+paramType,0) > -1  
+		index = __find_in_list(smoothc.CStructTypes,paramType,0) 
+		add(param,smoothc.CStructTypes[index][1])
+		add(param,PARAMETER_POINTER)
+	elif strContains(paramType,"*") 
+		if !strEndsWith(param[0],"*") {
+			pSplit = strSplit(param[0],"*")
+			param[0] = pSplit[0]+"*" 
+		}
+		add(param,null)
+		add(param,PARAMETER_POINTER)
+	elif strContains(paramType,"const") and recurse
+		pa = __trim(removeStr(paramType,"const")) 
+		return getParamType(pa,paramType,false)
+	/*elif strContains(paramType,"&") and recurse #treat it perfectly
+		pa = __trim(removeStr(paramType,"&"))
+		return getParamType(pa,paramType,false) */
+	elif hasClass and recurse
+		pa = currentClass+"::"+paramType
+		return getParamType(pa,paramType,false)
+	# elif hasClass and strContains(paramType,currentClass+"::")
+		# pa = __trim(removeStr(paramType,currentClass+"::"))
+		# return getParamType(pa,paramType,false)
+	else
+		/*if strContains(initialparamType,"&") {
+			initialparamType = __trim(removeStr(initialparamType,"&"))
+		} */
+		param = [] 
+		add(param,initialparamType)
+		add(param,null)
+		add(param,PARAMETER_POINTER)
+	} 
+	return param
+	
+block addAssignmentBlock(currentValue) 
+	parseCommaVars = true
+	isStatic = false
+	if strStartsWith(currentValue,"static") {
+		isStatic = true
+		currentValue = removeStr(currentValue,"static ")
+	}
+	if currentValue == null { return }
+	if strContains(currentValue, "->")  or strContains(currentValue, "[") or strStartsWith(currentValue,"struct") {
+		return
+	} 
+	currentValue = removeStr(currentValue,"enum")
+	currentValue = removeStr(currentValue,"{")
+	currentValue = removeStr(currentValue,"}")
+	currentValue = removeStr(currentValue,";")
+	
+	if !strContains(currentValue,",") or (strContains(currentValue,",") and !parseCommaVars) { 
+		currentValue = __trim(removeStr(currentValue,","))
+	elif strContains(currentValue,",") and parseCommaVars
+		tValue = __trim(removeStr(currentValue,","))
+		sp = strSplit(currentValue," ") 
+		spLen = lengthOf(sp)-1
+		modifier = sp[0]
+		if lengthOf(sp) == 3 { 
+			modifier = ""
+			for i = 0 to 1 {
+				modifier += sp[i] + " "
+			}
+		}
+		modifier = replaceStr(modifier,tab," ")
+		modifier = __trim(modifier)
+		tValue = removeStr(currentValue,modifier)
+		tValueSplit = strSplit(tValue,",")
+		currentValue = ""
+		for value in tValueSplit {
+			currentValue += modifier + " " + value + "="
+		}
+	}
+	
+	fetishModifier = false
+	splitParam = strSplit(currentValue,"=")
+	for param in splitParam {
+		if isDigit(__trim(param)) {
+			continue
+		} 
+		stdout.print("EXPORTING:VARIABLE : "+param+"...")
+		sp = strSplit(param," ") 
+		spLen = lengthOf(sp)-1
+		offset = __substr(param,sp[spLen])
+		modifier = __substr(param,0,offset-1)
+		if spLen < 1 { stdout.println("(failed)")  continue }
+		/*modifier = sp[0]
+		if lengthOf(sp) == 3 { 
+			modifier = ""
+			for i = 0 to 1 {
+				modifier += sp[i] + " "
+			}
+		} */
+		modifier = __trim(modifier)
+		for operator in smoothc.COperators {
+			if strContains(sp[spLen],operator) {
+				stdout.println("(failed)") return
+			}
+		}
+		if isDigit(sp[spLen]) {
+			stdout.println("(failed)") continue
+		} 
+		sp[spLen] = removeStr(sp[spLen],")") 
+		if isDigit(sp[spLen]) { stdout.println("(failed)") continue }
+		if __find_in_list(smoothc.COperators,sp[spLen]) < 0 and !strContains(sp[spLen],"(") and !strContains(sp[spLen],")") {
+			type = RETURN_POINTER 
+			if __find_in_list(smoothc.CNumberTypes,modifier,0) > -1 {
+				type = RETURN_NUMBER 
+			#elif __find_in_list(smoothc.CVoidTypes,modifier) > -1 
+			#	type = RETURN_VOID 
+			elif __find_in_list(smoothc.CStringTypes,modifier,0) > -1 
+				type = RETURN_STRING
+			}
+			if !strContains(sp[spLen],".") && !strContains(sp[spLen],",") { 
+				uniqueID = (sp[spLen]+"_"+"_") 
+				if __find_in_list(treatedHeaderValue,uniqueID) > -1 {
+					stdout.println("(failed)") return
+				} 
+				if hasClass {
+					if isStatic {
+						sp[spLen] = currentClass+"::"+sp[spLen]
+					else
+						sp[spLen] = currentClass+"::"+sp[spLen]
+						stdout.println("(failed)") 
+						continue
+						#not yet accessing non static variable
+					}
+				} 
+				add(treatedHeaderValue,uniqueID) 
+				add(wrapAbleBlocks,[type,sp[spLen],sp[spLen],[], CONSTANT,hasClass,currentClass,currentClassParent]) 
+				stdout.println("(done)")
+			}
+		else
+			stdout.println("(failed)") 
+		}
+	}
+	
+block initStructFunction(struct)
+	if struct == null { return } 
+	stdout.print("EXPORTING:STRUCT : "+struct+"...")
+	uniqueID = (struct+"_"+"_") 
+	if __find_in_list(treatedHeaderValue,uniqueID) > -1 {
+		stdout.println("(failed)") return
+	} 
+	add(treatedHeaderValue,uniqueID) 
+	add(wrapAbleBlocks,[RETURN_POINTER,struct,struct,[],STRUCT_POINTER,hasClass,currentClass,currentClassParent]) 
+	stdout.println("(done)")
+	
+block parseLineComment(source, sourceLen, position, Terminator)
+	continueSkipping = true position++ 
+	while !strContains(source[position],Terminator) and !strEndsWith(source[position],"\") {
+		position++
+	}
+	return position
+	
 	
 class WrapBlock
 	
 	RealBlockName = ""
+	RealFunctionName = ""
+	ActualValue = ""
 	RealBlockParameters = []
 	ParamForReturn = ""
+	BlockType = FUNCTION
 	
 	BlockName = ""
 	BlockParameters = ""
 	BlockParametersLen = 0
 	ReturnValue = ""
+	SimpleWrapper = "" 
+	HasClass = false
+	ClassName = ""
+	ClassNameParent = ""
 	
 	block setBlockName(value) 
 		RealBlockName = value
-		if cblockPrefix != "" {
-			value = toLowerCase(cblockPrefix)+"_"+value
+		ActualValue = value
+		value = replaceStr(value,"::","_")
+		value = replaceStr(value,"->","_")
+		value = replaceStr(value,".","_")
+		if BlockType == STRUCT_POINTER {
+			RealBlockName = "init_"+RealBlockName
 		}
-		BlockName = "SIMPLE_BLOCK(" + value + ") {" + nl
-		for a = 0 to (BlockParametersLen - 1) {
-			if RealBlockParameters[a][1] == PARAMETER_NUMBER {
-				BlockName += "	"+RealBlockParameters[a][0]+" num"+(a+1) + ";" + nl
-				ParamForReturn += "	num"+(a+1)+" = ("+RealBlockParameters[a][0]+") SIMPLE_API_GETNUMBER(" + (a+1) + ");" + nl
-			elif RealBlockParameters[a][1] == PARAMETER_POINTER
+		if smoothc.Prefix != "" && BlockType != STRUCT_POINTER {
+			if HasClass {
+				value = toLowerCase(smoothc.Prefix)+"_"+toLowerCase(ClassName)+"_"+value
+			else
+				value = toLowerCase(smoothc.Prefix)+"_"+value
+			}
+		elif BlockType == STRUCT_POINTER
+			value = RealBlockName
+		}
+		RegisterName = RealBlockName
+		start = 0 
+		if HasClass and ClassName != RealFunctionName {
+			RegisterName = ClassName+"_"+replaceStr(RealBlockName,"::","_")
+			RegisterName = replaceStr(RegisterName,"->","_")
+			RegisterName = replaceStr(RegisterName,".","_")
+		elif HasClass and ClassName == RealFunctionName
+			start = 1
+		}
+		SimpleWrapper = nl + '	register_block("__'+RegisterName+'",'+value+');'
+		BlockName = "SIMPLE_BLOCK(" + value + ") "+nl+"{" 
+		if BlockType == CONSTANT { BlockName += nl return 
+		elif BlockType == STRUCT_POINTER 
+			uniqueName = ActualValue+__rand()
+			BlockName += nl + "	"+ActualValue+"* "+uniqueName+";" 
+			RealBlockName = removeStr(uniqueName, " ") 
+			RealFunctionName = RealBlockName
+			return
+		} BlockName += nl
+		for a = start to (BlockParametersLen - 1) {
+			if lengthOf(RealBlockParameters[a]) <= 1 { RealBlockParameters[a] + PARAMETER_POINTER }
+			if strContains(RealBlockParameters[a][0],"&") {
+				RealBlockParameters[a][0] = replaceStr(RealBlockParameters[a][0],"&","*")
+				RealBlockParameters[a] + "&"
+			else
+				RealBlockParameters + null
+			} 
+			if RealBlockParameters[a][2] == PARAMETER_NUMBER { 
+				BlockName += "	"+RealBlockParameters[a][0]+" num"+(a+1) + ";" + nl 
+				ParamForReturn += "	num"+(a+1)+" = ("+RealBlockParameters[a][0]+")"
+				if RealBlockParameters[a][1] != null {
+					ParamForReturn += " ("+RealBlockParameters[a][1]+")"
+				}
+				ParamForReturn += " SIMPLE_API_GETNUMBER(" + (a+1-start) + ");" + nl
+			elif RealBlockParameters[a][2] == PARAMETER_STRING 
+				BlockName += "	"+RealBlockParameters[a][0]+" str"+(a+1) + ";" + nl
+				ParamForReturn += "	str"+(a+1)+" = ("+RealBlockParameters[a][0]+") "/*+"("+RealBlockParameters[a][1]+")"*/
+				ParamForReturn += " SIMPLE_API_GETSTRING(" + (a+1-start) + ");" + nl
+			elif RealBlockParameters[a][2] == PARAMETER_POINTER
 				BlockName += "	"+RealBlockParameters[a][0]+" point"+(a+1) + ";" + nl
+				#RealBlockParameters[a][0] = removeStr(RealBlockParameters[a][0],"struct ")
 				ParamForReturn += "	point"+(a+1)+" = ("+RealBlockParameters[a][0]+") "
-				ParamForReturn += 'SIMPLE_API_GETCPOINTER(' + (a+1) + ',"'+toUpperCase(cblockPrefix)+'");' + nl
+				tempPre = ""
+				if smoothc.Prefix != null {
+					tempPre = toUpperCase(smoothc.Prefix)
+				}
+				if strContains(RealBlockParameters[a][0],"char*") {
+					RealBlockParameters[a][0] = removeStr(RealBlockParameters[a][0],"char*")
+				}
+				realType = replaceStr(RealBlockParameters[a][0]," ","")
+				if strContains(realType,"**") { 
+					ParamForReturn += 'SIMPLE_API_GETCPOINTER2POINTER(' + (a+1-start) + ',"SMOOTHC_'+tempPre+'");' + nl 
+					continue
+				}
+				ParamForReturn += 'SIMPLE_API_GETCPOINTER(' + (a+1-start) + ',"SMOOTHC_'+tempPre+'");' + nl
 			}
 		}
 		BlockName += "	if ( SIMPLE_API_PARACOUNT != " + BlockParametersLen + " ) {
 		SIMPLE_API_ERROR(SIMPLE_API_MISS" + BlockParametersLen + "PARA);
 		return ;
 	}"
+		BlockName += nl
 		
 	block setBlockParameters(value)
-		RealBlockParameters = value
+		RealBlockParameters = value 
+		if BlockType == CONSTANT { return } BlockName += nl
 		for a = 0 to (BlockParametersLen - 1) {
+			if lengthOf(value[a]) <= 1 { continue} 
 			if value[a][1] == PARAMETER_NUMBER {
 				BlockParameters += "	if ( !SIMPLE_API_ISNUMBER(" + (a+1) + ") ) {
+		SIMPLE_API_ERROR(SIMPLE_API_BADPARATYPE); 
+		return ;
+	} " + nl
+			elif value[a][1] == PARAMETER_STRING
+				BlockParameters += "	if ( !SIMPLE_API_ISSTRING(" + (a+1) + ") ) {
 		SIMPLE_API_ERROR(SIMPLE_API_BADPARATYPE); 
 		return ;
 	} " + nl
@@ -102,162 +1062,591 @@ class WrapBlock
 		
 	block setReturnValue(value)
 		ReturnValue = ParamForReturn + "	"
+		if BlockType == STRUCT_POINTER {
+			ReturnValue += nl + "	"
+		}
 		if value == PARAMETER_NUMBER {
 			ReturnValue += "SIMPLE_API_RETNUMBER("
+		elif value == PARAMETER_STRING
+			ReturnValue += "SIMPLE_API_RETSTRING("
 		elif value == PARAMETER_POINTER
 			ReturnValue += "SIMPLE_API_RETCPOINTER("
 		}
-		ReturnValue += RealBlockName+"("
-		for a = 0 to (BlockParametersLen - 1) {
-			if RealBlockParameters[a][1] == PARAMETER_NUMBER {
+		paramStart = 0
+		if HasClass and BlockParametersLen > 0 and !strContains(RealFunctionName,"::") {
+			paramStart = 1 
+			if ClassName == RealFunctionName {
+				ReturnValue += "new "+RealFunctionName
+			else
+				ReturnValue += "point1"+smoothc.ClassMemberSymbol+RealFunctionName
+			}
+		else
+			ReturnValue += RealFunctionName
+		}
+		if BlockType == FUNCTION { ReturnValue+="(" }
+		for a = paramStart to (BlockParametersLen - 1) {
+			if lengthOf(RealBlockParameters[a]) > 3 {
+				if RealBlockParameters[a][3] == "&" {
+					ReturnValue += "*"
+				}
+			}
+			if RealBlockParameters[a][2] == PARAMETER_NUMBER {
 				ReturnValue += "num" + (a+1) + ""
-			elif RealBlockParameters[a][1] == PARAMETER_POINTER 
+			elif RealBlockParameters[a][2] == PARAMETER_STRING
+				ReturnValue += "str" + (a+1) + ""
+			elif RealBlockParameters[a][2] == PARAMETER_POINTER 
 				ReturnValue += "point" + (a+1) + ""
 			}
 			if a != (BlockParametersLen - 1) { ReturnValue += "," }
 		}
-		ReturnValue  += ")" 
-		if value == PARAMETER_POINTER { ReturnValue+= ',"' + toUpperCase(cblockPrefix) + '"'}
-		ReturnValue  += ");" + nl + "}" + nl 
-			
-class GenerateFromHeader
+		if BlockType == FUNCTION { ReturnValue+=")" }
+		if value == PARAMETER_POINTER { 
+			tempPre = ""
+			if smoothc.Prefix != null {
+				tempPre = toUpperCase(smoothc.Prefix)
+			}
+			ReturnValue+= ',"SMOOTHC_' + tempPre + '"'
+		}
+		if value != PARAMETER_VOID {
+			ReturnValue  += ")"
+		}
+		ReturnValue  += ";" + nl + "}" + nl 
+		
+		
+class SmoothC 
 
 	HeaderFiles = []
-	
-	cNumberTypes = ["int",
-					"char",
-					"long",
-					"long long",
-					"long long long",
-					"long int",
-					"long long int",
-					"int8_t",
-					"int16_t",
-					"int32_t",
-					"int64_t",
-					"uint8_t",
-					"uint16_t",
-					"uint32_t",
-					"uint64_t",
-					"float",
-					"double",
-					"bool",
-					"BOOL",
-					"size_t",
-					"unsigned int",
-					"unsigned char",
-					"unsigned float",
-					"unsigned double",
-					"unsigned long",
-					"unsigned long long"]
+	Variables = []
+	RegisterOnly = []
+	FilePath = null
+	Code = ""
+	PostCode = ""
+	SourceDir = ""
+	IncludeDir = ""
+	FileName = ""
+	Module = ""
+	Lang="c"
+	ClassMemberSymbol="->"
+	ExecuteCode = ""
+	FileExt = "c"
+	LDOptions = ""
+	OpDir = ""
+	ReadHeaderFile = true
+	CreateSimpleWrapper = true
+	GenerateMakefile = true
+	Prefix = "smoothc_"+__rand()
+	LibName = "smoothc_"+__rand() 
+	UntreatedFunction = []
+	UntreatedVariables = []
+	UselessTokens = [cr,
+					"__MINGW_EXTENSION ",
+					'extern "C" {',
+					'extern "C++" {',
+					"extern",
+					"inline ",
+					"virtual ",
+					"__restrict__ ",
+					"_CRTIMP ",
+					"__MINGW_EXTENSION ",
+					"__cdecl "]
 					
-	cStructTypes = []
+	CNumberTypes = [["int","int"],
+					["char","char"],
+					["long","long"],
+					["long long","long long"],
+					["long long long",""],
+					["long int",""],
+					["long long int",""],
+					["int8_t","int8_t"],
+					["int16_t","int16_t"],
+					["int32_t","int32_t"],
+					["__int64","__int64"],
+					["int64_t","int64_t"],
+					["uint8_t","uint8_t"],
+					["uint16_t","uint16_t"],
+					["uint32_t","uint32_t"],
+					["uint64_t","uint64_t"],
+					["float","float"],
+					["double","double"],
+					["bool","int"],
+					["BOOL","int"],
+					["size_t","size_t"],
+					["intptr_t","intptr_t"],
+					["unsigned","int"],
+					["unsigned int","unsigned int"],
+					["unsigned char","unsigned char"],
+					["unsigned float","unsigned float"],
+					["unsigned double","unsigned double"],
+					["unsigned long","unsigned long"],
+					["unsigned long long","unsigned long long"]]
+	CStringTypes = [["const char *",""],
+					["const char*",""],
+					["char const *",""],
+					["char const*",""],
+					["char const *",""],
+					["char const * const",""],
+					["char *",""],
+					["char*",""]]
+	CVoidTypes 	= [["void *",""],
+					["void*",""],
+					["void",""]]
+	CStructTypes = []
+	COperators 	= ["<<",
+					"operator",
+					"<",
+					">>",
+					">",
+					"++",
+					"+",
+					"--",
+					"-",
+					"**",
+					"*",
+					"/",
+					"//",
+					"\",
+					"\\",
+					"%",
+					"+=",
+					"-=",
+					"/=",
+					"*=",
+					"%=",
+					"^",
+					"&&",
+					"&",
+					"*",
+					"||",
+					"|",
+					"~",
+					"^",
+					"!",
+					".",
+					"`"]
+					
+	CppDirective = 'extern "C" {
+
+	SIMPLE_API void init_simple_module_cpp(SimpleState *sState);
+	SIMPLE_API void init_simple_module(SimpleState *sState)
+	{
+		init_simple_module_cpp(sState);
+	}
+
+}'
+
+	block SmoothC()
 	
-	block execute() 
-		for hFile in HeaderFiles {
-			readHeaderFile(hFile)
+	block process()
+		if FilePath == null {
+			return
 		}
 		
-	private 
-	
-		block readHeaderFile(hFile)
-			preCode = ""
-			stillPreCode = true
-			wrapAbleBlocks = []
-			TOKEN_NORMAL =  0 TOKEN_MULTILINE_COMMENT = 1 TOKEN_LITERAL_1 = 2 TOKEN_LITERAL_2 = 3
-			type = TOKEN_NORMAL
-	
-			hContent = __readfile(hFile)
-			hContentLines = __string_to_list(hContent) 
-			hContentLen = lengthOf(hContentLines) - 1 
-			for i = 0 to hContentLen {
-				currentValue = __trim(hContentLines[i])
-				if currentValue == "" {
-				elif !strStartsWith(currentValue, "#") && !strStartsWith(currentValue, "//")
-					splitedValue = strSplit(currentValue," ")
-					sVLen = lengthOf(splitedValue) 
-					if splitedValue[0] == "typedef" {
-						addNewDataType(currentValue)
-					elif __find_in_list(cNumberTypes,splitedValue[0]) 
-						add(wrapAbleBlocks,lineAsCFuntion(currentValue,RETURN_NUMBER)) 
-					elif strContains(splitedValue[0],"*") or (sVLen > 1 and strContains(splitedValue[1],"*")) 
-						add(wrapAbleBlocks,lineAsCFuntion(currentValue,PARAMETER_POINTER)) 
-					}
-				}
-			}
-		generateCWrapperBlocks(wrapAbleBlocks)
-			
-		block lineAsCFuntion(line,returnType)
-			funcName = "" 
-			
-			offset = __substr(line,"(") - 1
-			terminate = 0  
-			for x = offset to 0 step -1 {
-				switch line[x] {	
-					case " " 
-						terminate = x
-						funcName = __substr(line,terminate+1,offset-terminate-1)
-						break
-					case "*"
-						terminate = x + 1 
-						funcName = __substr(line,terminate,offset-terminate)
-						break
-				}
-			}
-			
-			returnValue = __left(line,terminate-1) 
-			cFuncParam = __substr(line,offset+1,(lengthOf(line)-1)-offset-1) 
-			cparameters = parseCParam(cFuncParam) 
-			return [returnType,funcName,cparameters]
-			
-			
-		block parseCParam(cparam)
-			finalParam = [] 
-			
-			splitParam = strSplit(cparam,",")
-			for param in splitParam {
-				param = removeStr(param,"(")
-				param = removeStr(param,")")
-				param = removeStr(param,";")
-				splitedValue = strSplit(param," ")
-				sVLen = lengthOf(splitedValue)
-					param = []
-					add(param,splitedValue[0])  
-				if __find_in_list(cNumberTypes,splitedValue[0]) { 
-					add(param,PARAMETER_NUMBER)
-				elif __find_in_list(cStructTypes,splitedValue[0]) or __find_in_list(cStructTypes,"*"+splitedValue[0]) 
-					add(param,PARAMETER_POINTER) 
-				}
-				if strContains(splitedValue[0],"*") { add(param,PARAMETER_POINTER) 
-				elif (sVLen > 1 and strContains(splitedValue[1],"*")) 
-					param = []
-					add(param,splitedValue[0] + "*") 
-					add(param,PARAMETER_POINTER)
-				}
-				finalParam + param
-			}
-			return finalParam
+		NONE = 0
+		HEADERS = 1
+		IGNORE_IN_HEADER = 2
+		NUMBER_TYPE = 3
+		STRING_TYPE = 4
+		VOID_TYPE = 5
+		CODE_TYPE = 6
+		POST_CODE_TYPE = 7
+		EXECUTE_CODE_TYPE = 8
+		REGISTER_FUNCTION_TYPE = 9
+		STRUCT_TYPE = 10
+		REGISTER_VARIABLE_TYPE = 11
+		currentGroup = NONE
+		codeBraceOpened = 0
 		
-		block addNewDataType(line)  
-			line = removeStr(line,";")
-			line = __trim(removeStr(line,"typedef"))
-			splitParam = strSplit(line," ")
-			sPLen = lengthOf(splitParam) - 1
-			
-			newDataType = __trim(splitParam[sPLen])
-			line = __trim(removeStr(line,newDataType))
-			if __find_in_list(cNumberTypes,line) {
-				if !__find_in_list(cNumberTypes,newDataType) {
-					cNumberTypes + newDataType
-				}
-			else 
-				if strContains(line,"*") and !strContains(newDataType,"*") {
-					newDataType = "*"+newDataType
-				}
-				cStructTypes + __trim(replaceStr(newDataType," ","")) 
+		TOKEN_NORMAL = 0 
+		TOKEN_GROUP = 1
+		token_type = TOKEN_NORMAL		
+		
+		source = __read_file(FilePath)
+		file = new File(FilePath)
+		changeDirectory(file.Directory.AbsolutePath)
+		source = replaceStr(source,tab,"    ")
+		source = removeStr(source,cr)
+		sourceLines = strSplit(source,nl)
+		sourceLine = 1
+		for line in sourceLines {
+			if currentGroup != CODE_TYPE and currentGroup != POST_CODE_TYPE and (strStartsWith(__trim(line),"//") or strStartsWith(__trim(line),"#")) {
+				continue
 			}
+			switch token_type {
+				case TOKEN_NORMAL
+					if line == "" {
+					elif strContains(line,"=")
+						setVariable(line,"source")
+					elif strStartsWith(line,"[")
+						groupSplit = strSplit(line,"]")
+						if lengthOf(groupSplit) < 2 {
+							display "Eror in line ("+sourceLine+") near : '"+line+"'"
+							throw("Error in group declaration : "+file_path)
+						}
+						group = removeStr(groupSplit[0],tab)
+						group = removeStr(group," ")
+						group = toLowerCase(__trim(removeStr(group,"[")))
+						token_type = TOKEN_GROUP 
+						if group == "headerfiles" or group == "includesfile" or group == "includes" {
+							currentGroup = HEADERS 
+						elif group == "ignoreinheader"
+							currentGroup = IGNORE_IN_HEADER
+						elif group == "numbertype"
+							currentGroup = NUMBER_TYPE
+						elif group == "stringtype"
+							currentGroup = STRING_TYPE
+						elif group == "voidtype" or group == "pointertype" 
+							currentGroup = VOID_TYPE
+						elif group == "variables" or group == "constants" 
+							currentGroup = REGISTER_VARIABLE_TYPE
+						elif group == "code" or group == "precode"
+							currentGroup = CODE_TYPE
+						elif group == "postcode" 
+							currentGroup = POST_CODE_TYPE
+						elif group == "exeute" or group == "executecode" 
+							currentGroup = EXECUTE_CODE_TYPE
+						elif group == "exportfunctions" or group == "registerfunctions" 
+							currentGroup = REGISTER_FUNCTION_TYPE
+						elif group == "structinit" or group == "struct" 
+							currentGroup = STRUCT_TYPE
+						elif group == "prefix" or group == "funcprefix" 
+							value = removeStr(groupSplit[1],"{")
+							value = __trim(removeStr(value,"}"))
+							if value != null { Prefix = value }
+						elif group == "name" or group == "libname" 
+							value = removeStr(groupSplit[1],"{")
+							value = __trim(removeStr(value,"}"))
+							if value != null { LibName = value }
+						elif group == "readheadersfile" or group == "readincludesfile" 
+							value = removeStr(groupSplit[1],"{")
+							value = __trim(removeStr(value,"}"))
+							if value == "true" or value = "1" {
+								ReadHeaderFile = true
+							else 
+								ReadHeaderFile = false
+							}
+						}						
+					else 
+						#@line
+					}
+				case TOKEN_GROUP 
+					lineLen = lengthOf(line)
+					actualValue = line 
+					while __substr(line,"$") != -1 {
+						index = __substr(line,"$")	
+						close_ = __substr(line,")") 
+						close = (lineLen-lengthOf(__substr(line,close_))+1) - index - 1 
+						var_ = __substr(line,index,close) 
+						var = removeStr(var_,"$") 
+						var = removeStr(var,"(") 
+						var = removeStr(var,")") 
+						if lengthOf(Variables[var]) > 0 {
+							actualValue = replaceStr(actualValue,var_,Variables[var][0])
+						else
+							actualValue = replaceStr(actualValue,var_,"")
+						}
+						 
+						line[index] = "~"
+						line[close_] = "~"
+					}
+					if currentGroup == CODE_TYPE or currentGroup == EXECUTE_CODE_TYPE or currentGroup == POST_CODE_TYPE {
+						line = actualValue
+						if strContains(line,"{") {
+							codeBraceOpened++
+						}
+						if strContains(line,"}") {
+							if codeBraceOpened == 0 {
+								if currentGroup == EXECUTE_CODE_TYPE {
+									executeCode(ExecuteCode)
+									ExecuteCode = ""
+								}
+								token_type = TOKEN_NORMAL
+								currentGroup = NONE
+								if __trim(line) == "}" {
+									continue
+								}
+							else
+								codeBraceOpened--
+							}
+						}
+						if currentGroup == EXECUTE_CODE_TYPE {
+							ExecuteCode += line + nl
+						elif currentGroup == POST_CODE_TYPE
+							PostCode += line + nl
+						else 
+							Code += line + nl
+						}
+						continue
+					
+					elif currentGroup == REGISTER_FUNCTION_TYPE
+						actualValue = replaceStr(line,tab,"    ")
+						actualValue = __trim(removeStr(actualValue,";"))
+						if strEndsWith(actualValue,"[RegisterOnly]") { 
+							actualValue = removeStr(actualValue,"[RegisterOnly]")
+							if lengthOf(strSplit(actualValue," ")) > 1 {
+								#error not valid
+								continue
+							} 
+							RegisterOnly + actualValue
+							continue
+						}
+						if strContains(line,"}") and __trim(line) == "}" {
+							token_type = TOKEN_NORMAL
+							currentGroup = NONE
+							continue
+						}
+						if actualValue != "" {
+							UntreatedFunction + actualValue
+						}
+						 
+					elif currentGroup == REGISTER_VARIABLE_TYPE
+						if strContains(line,"}") and __trim(line) == "}" {
+							token_type = TOKEN_NORMAL
+							currentGroup = NONE
+							continue
+						}
+						actualValue = replaceStr(line,tab,"    ")
+						actualValue = __trim(removeStr(actualValue,";"))
+						UntreatedVariables + actualValue 
+						continue
+					}
+					if strContains(line,"}") {
+						token_type = TOKEN_NORMAL
+						currentGroup = NONE
+						if __trim(line) == "}" {
+							continue
+						}
+					}
+					if strContains(line,"=") {
+						display "Eror in line ("+sourceLine+") near : '"+line+"'"
+						throw("A variable cannot be declared in a group : "+file_path)
+					}
+					if strContains(line,'"') {
+						line = replaceStr(line,tab," ")
+					else
+						line = removeStr(line,tab)
+						line = removeStr(line," ")
+					}
+					actualValue = removeStr(__trim(actualValue),'"')
+					if currentGroup == HEADERS {
+						HeaderFiles + actualValue
+					elif currentGroup == IGNORE_IN_HEADER
+						UselessTokens + actualValue
+					elif currentGroup == NUMBER_TYPE
+						value = []
+						avS = strSplit(actualValue,":")
+						add(value,avS[0])
+						if lengthOf(avS) > 1 {
+							add(value,avS[1])
+						else
+							add(value,null)
+						} 
+						CNumberTypes + value
+					elif currentGroup == STRING_TYPE
+						value = []
+						avS = strSplit(actualValue,":")
+						add(value,avS[0])
+						if lengthOf(avS) > 1 {
+							add(value,avS[1])
+						else
+							add(value,null)
+						} 
+						CStringTypes + value
+					elif currentGroup == VOID_TYPE
+						value = []
+						avS = strSplit(actualValue,":")
+						add(value,avS[0])
+						if lengthOf(avS) > 1 {
+							add(value,avS[1])
+						else
+							add(value,null)
+						} 
+						CVoidTypes + value
+					elif currentGroup == STRUCT_TYPE
+						CStructTypes + actualValue
+					}
+			}
+			sourceLine++
+		}
+		
+	block setVariable(line,from)
+		varSplit = strSplit(line,"=")
+		var = varSplit[0] 
+		if lengthOf(varSplit) > 1 {
+			value = varSplit[1] 
+		else
+			value = ""
+		}
+		if toLowerCase(var) == "prefix" or toLowerCase(var) == "funcprefix" {
+			Prefix = value 
+		elif toLowerCase(var) == "libname" or toLowerCase(var) == "name" 
+			LibName = value 
+		elif toLowerCase(var) == "module" or toLowerCase(var) == "package" 
+			Module = OpDir+"/"+value 
+		elif toLowerCase(var) == "filename" 
+			FileName = value 
+		elif toLowerCase(var) == "sourcedir" 
+			SourceDir += value 
+		elif toLowerCase(var) == "includedir" 
+			IncludeDir += value 
+		elif toLowerCase(var) == "ldlibsoptions" 
+			LDOptions += value + " " 
+		elif toLowerCase(var) == "lang" 
+			Lang = value 
+		elif toLowerCase(var) == "fileextension" 
+			FileExt = value 
+		elif toLowerCase(var) == "readheadersfile" or toLowerCase(var) == "readincludesfile" 
+			if value == "true" or value == "1" or value == "no" {
+				ReadHeaderFile = true
+			else 
+				ReadHeaderFile = false
+			}
+		elif toLowerCase(var) == "createsimplewrapper" or toLowerCase(var) == "simplewrapper" 
+			if value == "true" or value == "1" or value == "no" {
+				CreateSimpleWrapper = true
+			else 
+				CreateSimpleWrapper = false
+			}
+		elif toLowerCase(var) == "generatemakefile" or toLowerCase(var) == "makefile" 
+			if value == "true" or value = "1" or value == "no" {
+				GenerateMakefile = true
+			else 
+				GenerateMakefile = false
+			}
+		}
+		if lengthOf(Variables[var]) > 0 and Variables[var][1] == "arg" {
+		else
+			Variables[var] = [value,from]
+		}
+		
+	block addHeaderFile(headerFile)
+		HeaderFiles + headerFile 
+		
+	block setFile(filePath)
+		if !__file_exists(filePath) {
+			throw("the smoothc file does not exists : "+filePath)
+		}
+		file = new File(filePath)
+		OpDir = file.Directory.AbsolutePath
+		this.FilePath = filePath
+		
+	block includesToCString() {
+		ret = nl
+		for include in HeaderFiles {
+			include = __trim(include)
+			if strStartsWith(include,"<") {
+				ret += '#include '+include+'' + nl
+			else
+				ret += '#include "'+include+'"' + nl
+			}
+		}
+		return ret
+	}
+	
+class SimpleWrapper 
+
+	FileName = ""
+	Module
+	ExportedFunctions = ""
+	SmoothC = null
+	CurrentSource = nl 
+	
+	block SimpleWrapper(smoothc,exportFunctions)
+		this.ExportedFunctions = exportFunctions
+		this.SmoothC = smoothc
+		if SmoothC.FileName == null {
+			FileName = SmoothC.Prefix
+		else
+			FileName = SmoothC.FileName
+		}
+		if SmoothC.Module == null {
+			Module = SmoothC.Prefix
+		else
+			Module = SmoothC.Module
+		} 
+		if __dir_exists(Module) {
+			dir = new Directory(Module)
+			dir.delete()
+		}
+		if __mkdir(Module) { 
+			FileName = Module + "/" + FileName 
+		}
+		CurrentSource += "module "+removeStr(Module,SmoothC.OpDir+"/") + nl + nl
+		CurrentSource += "call simple.core.DynamicLoader" + nl
+		CurrentSource += "call simple.core.loadcoredymodule" + nl 
+		
+		CurrentSource += 'callModule("'+SmoothC.LibName+'")' + nl 
+	
+	block process()
+		Variables = ""
+		CodeBlock = ""
+		for function in ExportedFunctions {
+			code = ""
+			if function[4] == STRUCT_POINTER {
+				code += nl + "block init_"+function[1]+"()" + nl
+				code += "	return __init_"+function[1]+"()"
+				CodeBlock += code + nl
+			elif function[4] == FUNCTION
+				#@function 
+				actualFuncParam = ""
+				code = nl + "block "+function[1]+"("
+				fLen = lengthOf(function[3]) - 1
+				for i = 0 to fLen  {
+					code += "param"+i
+					actualFuncParam += "param"+i
+					if i != fLen {
+						code += ","
+						actualFuncParam += ","
+					}					
+				}
+				code += ")" + nl
+				code += "	return __"+function[1]+"("+actualFuncParam+")"
+				CodeBlock += code + nl
+			elif function[4] == CONSTANT
+				Variables += nl + "	" + function[1] + " 		= __" + function[1] + "()"
+			}
+		}
+		CurrentSource += Variables + nl
+		CurrentSource += CodeBlock 
+		__write_file(FileName+".sim",CurrentSource)
+
+	
+class MakeFile 
+
+	SmoothC = null
+	makefile = ""
+	hasMakefileTmpl = false
+	
+		block MakeFile(smoothc)
+			this.SmoothC = smoothc
+			initMakefileTmpl()
 			
-				
-		block isNewLine(val)
-			return val == cr || val == nl || val == crlf
+		block generate() 
+			if !hasMakefileTmpl {
+				return 
+			}
+			makefile = replaceStr(makefile,"#(LIBNAME)",SmoothC.LibName)
+			makefile = replaceStr(makefile,"#(FILE_EXT)",SmoothC.FileExt) 
+			makefile = replaceStr(makefile,"#(SIMPLE_MODULE_W)",removeStr(SmoothC.Module,SmoothC.OpDir+"/")) 
+			makefile = replaceStr(makefile,"#(EXTERNAL_SRC_DIR)",replaceStr(SmoothC.SourceDir,"\","/"))
+			makefile = replaceStr(makefile,"#(EXTERNAL_INCLUDE_DIR)",replaceStr(SmoothC.IncludeDir,"\","/")) 
+			makefile = replaceStr(makefile,"#(OTHER_OPTION)",SmoothC.LDOptions)
+			makefile = replaceStr(makefile,"#(DY_LIB_EXT)",dynamicModuleExt()) 
+			makefile = replaceStr(makefile,"#(SIMPLE_MODULE_DIR)",replaceStr(simpleModulesDir(),"\","/"))
+			simpleLib = simpleExecDir() + "libsimple."+dynamicModuleExt()
+			if __file_exists(simpleIncludeHeader) {
+				simpleLib = replaceStr(simpleLib,"\","/")
+				makefile = replaceStr(makefile,"#(SIMPLE_SHARED_LIB_PATH)",simpleLib) 
+			}
+			__write_file(SmoothC.OpDir+"/Makefile",makefile)
 			
+		block initMakefileTmpl()
+			if isWindows() and __file_exists("./MakefileWinTmpl") {
+				makefile = __read_file("./MakefileWinTmpl")
+				hasMakefileTmpl = true
+			}
+		
+# TODE : To make list as '...' va_list
+# TODO : export block to count number of vars, func and struct
+# TODO : export user meta info
+# TODO : export array of strings as list
+# Keep #include in raw source in a .smoothc file

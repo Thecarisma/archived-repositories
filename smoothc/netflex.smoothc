@@ -1,0 +1,15 @@
+Prefix=netflex
+LibName=netflex
+FileName=netflex
+CreateSimpleWrapper=true
+Makefile=true
+Enum=false
+Module=netflex
+ReadIncludesFile=true
+IncludeDir=
+SourceDir=
+LDLIBSOPTIONS=
+
+[IncludesFile] {
+	$(IncludeDir)/include.h
+}
