@@ -14,6 +14,9 @@ collections:
   devjammer:
     output: true
     permalink: /:path
+  blog:
+    output: true
+    permalink: /:path
 
 defaults:
   - scope:
@@ -41,6 +44,10 @@ external_links:
     - name: Cronux
       href: https://thecarisma.github.io/Cronux/
       title: Cronux
+      
+    - name: Inno Setup
+      href: http://www.jrsoftware.org/isinfo.php
+      title: Inno Setup
 
 # For a poor man's static archival deployment with relative links,
 # change baseurl to ".", uncomment permalink, and suffix collections > devjammer > permalink with ".html".
